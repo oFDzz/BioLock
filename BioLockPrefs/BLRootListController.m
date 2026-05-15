@@ -1,5 +1,6 @@
 #import "BLRootListController.h"
 #import <objc/runtime.h>
+#import <sys/stat.h>
 
 #define kBLPrefsPath @"/var/jb/Library/Application Support/BioLock/prefs.plist"
 #define kBLNotification "com.biolock.prefs/changed"
