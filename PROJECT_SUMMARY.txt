@@ -1,0 +1,104 @@
+BioLock — App Lock with Face ID / Passcode
+===========================================
+Last updated: 2026-05-15
+Device: iPhone 14 Pro (A16, arm64e), iOS 15.6.1, Dopamine (rootless)
+Repository: https://github.com/oFDzz/BioLock
+
+=====================================
+WHAT IT DOES
+=====================================
+Locks selected apps behind Face ID authentication. When you tap a locked
+app icon on the home screen, Face ID scans immediately. A "Enter Passcode"
+button is visible during the scan as fallback. If Face ID fails or user
+taps the button, device passcode input is shown. App only opens on
+successful authentication. Auth is required EVERY time — no session caching.
+
+=====================================
+HOW IT WORKS
+=====================================
+1. Tweak loads ONLY in SpringBoard (com.apple.springboard)
+2. Reads locked app list from prefs plist
+3. Hooks SBIconView._handleTap (the method called when tapping an app icon)
+4. If tapped app is in locked list → intercept, show Face ID via LAContext
+5. Face ID success → call original _handleTap → app opens
+6. Face ID fail → show passcode input (LAPolicyDeviceOwnerAuthentication)
+7. Cancel → stay on home screen, app doesn't open
+
+=====================================
+KEY FINDINGS DURING DEVELOPMENT
+=====================================
+- iOS 15.6.1 uses SBIconView._handleTap for icon taps (NOT _launchApp)
+- Found via runtime method dump: class_copyMethodList on SBIconView
+- Logos %hook silently fails if method doesn't exist — used runtime
+  method_setImplementation instead for reliable hooking
+- LAContext policies:
+  * LAPolicyDeviceOwnerAuthenticationWithBiometrics = Face ID only, shows
+    localizedFallbackTitle as button text ("Enter Passcode")
+  * LAPolicyDeviceOwnerAuthentication = biometrics + passcode combined,
+    but no visible passcode button during Face ID scan
+  * Best approach: start with biometrics policy (shows button), on
+    fallback/failure switch to device owner policy (shows passcode input)
+
+=====================================
+FILES
+=====================================
+Tweak.x (~140 lines)
+  - SBIconView._handleTap hook via runtime method_setImplementation
+  - LAContext Face ID + passcode fallback
+  - Prefs reading + Darwin notification listener
+  - No session caching — auth required every time
+
+BioLockPrefs/BLRootListController.m
+  - PSViewController subclass (NOT PSListController — that crashes)
+  - UITableView with inset grouped style
+  - Header: "BioLock" title + "Lock apps with Face ID" subtitle
+  - Enable toggle with Face ID icon
+  - Searchable app list with app icons (32x32 rounded)
+  - Locked apps show green lock icon + "Protected" label
+  - Prefs saved to /var/jb/Library/Application Support/BioLock/prefs.plist
+  - posix_spawn mkdir/chmod for directory creation (rootless compat)
+
+BioLock.plist — Filter: com.apple.springboard only
+
+=====================================
+PREFERENCES
+=====================================
+Stored in: /var/jb/Library/Application Support/BioLock/prefs.plist
+  enabled    — master toggle (BOOL)
+  lockedApps — array of bundle ID strings
+
+Directory must be chmod 0777 for mobile user (Preferences app) to write.
+postinst creates with 0755 (root) — _savePrefs does chmod 0777 on every save.
+
+=====================================
+ISSUES ENCOUNTERED & SOLVED
+=====================================
+1. PSListController crash: custom numberOfSections conflicted with empty
+   specifiers. Fix: use PSViewController with own UITableView.
+
+2. Prefs not persisting: directory created by postinst as root (0755),
+   Preferences app runs as mobile → permission denied.
+   Fix: posix_spawn chmod 0777 on every save.
+
+3. AMFI blocking: entitlements on preference bundle (non-main binary)
+   caused AMFI constraint violation. Fix: removed entitlements file.
+
+4. _launchApp not found: iOS 15.6.1 uses _handleTap not _launchApp.
+   Fix: runtime method discovery + method_setImplementation.
+
+5. Assets.car warning: harmless — no asset catalog in bundle. Cosmetic only.
+
+=====================================
+FUTURE IDEAS
+=====================================
+- App switcher protection: hook SBMainSwitcherViewController to require
+  auth when switching to a locked app from multitasker
+- Notification tap protection: hook notification handling to require auth
+  when tapping a notification that opens a locked app
+- Custom passcode: separate 4/6 digit code instead of device passcode
+- Lock on app close: currently requires auth every tap (no session).
+  Could add option for "lock after X minutes" or "lock on app exit"
+- Blur/hide app content in app switcher for locked apps
+- Touch ID support (already works via LAContext on Touch ID devices)
+- Whitelist: temporarily unlock all apps for a time period
+- Per-app lock settings: different auth requirements per app
