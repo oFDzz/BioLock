@@ -105,53 +105,25 @@ static void authenticateForApp(NSString *bid, NSString *appName,
     NSLog(@"[BioLock] 🔐 authenticating for %@ (%@)", appName, bid);
 
     LAContext *ctx = [[LAContext alloc] init];
-    ctx.localizedFallbackTitle = @"Enter Passcode";
-
-    NSError *canEvalErr = nil;
-    BOOL canBio = [ctx canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics
-                                   error:&canEvalErr];
-
-    LAPolicy policy = canBio
-        ? LAPolicyDeviceOwnerAuthenticationWithBiometrics
-        : LAPolicyDeviceOwnerAuthentication;
 
     NSString *reason = [NSString stringWithFormat:@"Unlock %@", appName ?: @"this app"];
 
-    [ctx evaluatePolicy:policy localizedReason:reason
-                  reply:^(BOOL success, NSError *error) {
-        if (success) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                sAuthInProgress = NO;
+    // LAPolicyDeviceOwnerAuthentication: Face ID starts immediately,
+    // passcode button is always visible as fallback. No two-step flow needed.
+    [ctx evaluatePolicy:LAPolicyDeviceOwnerAuthentication
+         localizedReason:reason
+                   reply:^(BOOL success, NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            sAuthInProgress = NO;
+            if (success) {
                 [sUnlockedThisSession addObject:bid];
                 NSLog(@"[BioLock] ✅ authenticated for %@", bid);
                 if (onSuccess) onSuccess();
-            });
-            return;
-        }
-
-        if (error.code == LAErrorUserFallback) {
-            LAContext *ctx2 = [[LAContext alloc] init];
-            [ctx2 evaluatePolicy:LAPolicyDeviceOwnerAuthentication
-                  localizedReason:reason
-                            reply:^(BOOL ok, NSError *err2) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    sAuthInProgress = NO;
-                    if (ok) {
-                        [sUnlockedThisSession addObject:bid];
-                        NSLog(@"[BioLock] ✅ passcode auth for %@", bid);
-                        if (onSuccess) onSuccess();
-                    } else {
-                        if (onFail) onFail();
-                    }
-                });
-            }];
-        } else {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                sAuthInProgress = NO;
-                NSLog(@"[BioLock] ❌ auth cancelled for %@ (code=%ld)", bid, (long)error.code);
+            } else {
+                NSLog(@"[BioLock] ❌ auth failed for %@ (code=%ld)", bid, (long)error.code);
                 if (onFail) onFail();
-            });
-        }
+            }
+        });
     }];
 }
 
