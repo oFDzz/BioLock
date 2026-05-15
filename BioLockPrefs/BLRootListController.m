@@ -5,20 +5,9 @@
 #define kBLPrefsPath @"/var/jb/Library/Application Support/BioLock/prefs.plist"
 #define kBLNotification "com.biolock.prefs/changed"
 
-// LSApplicationWorkspace for enumerating installed apps
 @interface LSApplicationProxy : NSObject
 - (NSString *)applicationIdentifier;
 - (NSString *)localizedName;
-- (id)appState;
-@end
-
-@interface LSApplicationWorkspace : NSObject
-+ (instancetype)defaultWorkspace;
-- (NSArray<LSApplicationProxy *> *)allInstalledApplications;
-@end
-
-@interface LSApplicationState : NSObject
-- (BOOL)isValid;
 @end
 
 @implementation BLRootListController {
@@ -29,12 +18,25 @@
     UISearchController *_searchController;
 }
 
-- (instancetype)init {
-    if ((self = [super init])) {
-        [self _loadPrefs];
-        [self _loadApps];
-    }
-    return self;
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"BioLock";
+
+    [self _loadPrefs];
+    [self _loadApps];
+
+    _tableView = [[UITableView alloc] initWithFrame:self.view.bounds style:UITableViewStyleInsetGrouped];
+    _tableView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    _tableView.dataSource = self;
+    _tableView.delegate = self;
+    [self.view addSubview:_tableView];
+
+    _searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
+    _searchController.searchResultsUpdater = self;
+    _searchController.obscuresBackgroundDuringPresentation = NO;
+    _searchController.searchBar.placeholder = @"Search apps...";
+    self.navigationItem.searchController = _searchController;
+    self.navigationItem.hidesSearchBarWhenScrolling = NO;
 }
 
 - (void)_loadPrefs {
@@ -52,7 +54,6 @@
         withIntermediateDirectories:YES attributes:nil error:nil];
     [_prefs writeToFile:kBLPrefsPath atomically:YES];
 
-    // chmod so SpringBoard can read it
     chmod([kBLPrefsPath UTF8String], 0666);
     chmod([dir UTF8String], 0755);
 
@@ -63,18 +64,15 @@
 
 - (void)_loadApps {
     Class LSW = NSClassFromString(@"LSApplicationWorkspace");
-    NSArray<LSApplicationProxy *> *all =
-        [[LSW performSelector:@selector(defaultWorkspace)]
-              performSelector:@selector(allInstalledApplications)];
+    NSArray *all = [[LSW performSelector:@selector(defaultWorkspace)]
+                         performSelector:@selector(allInstalledApplications)];
 
     NSMutableArray *userApps = [NSMutableArray new];
     for (LSApplicationProxy *proxy in all) {
         NSString *bid = [proxy applicationIdentifier];
         if (!bid) continue;
-        // skip system/internal apps without UI
         if ([bid hasPrefix:@"com.apple.webapp"]) continue;
         if ([bid hasPrefix:@"com.apple.bridge"]) continue;
-        // skip Settings itself
         if ([bid isEqualToString:@"com.apple.Preferences"]) continue;
 
         NSString *name = [proxy localizedName];
@@ -91,46 +89,30 @@
     _filteredApps = userApps;
 }
 
-#pragma mark - View Lifecycle
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    self.title = @"BioLock";
-
-    _searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
-    _searchController.searchResultsUpdater = (id)self;
-    _searchController.obscuresBackgroundDuringPresentation = NO;
-    _searchController.searchBar.placeholder = @"Search apps...";
-    self.navigationItem.searchController = _searchController;
-    self.navigationItem.hidesSearchBarWhenScrolling = NO;
-}
-
-#pragma mark - Table Data Source
+#pragma mark - UITableView
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv {
-    return 3; // header, enable toggle, app list
+    return 2; // enable toggle, app list
 }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section {
-    if (section == 0) return 0; // header
-    if (section == 1) return 1; // enable toggle
+    if (section == 0) return 1;
     return _filteredApps.count;
 }
 
 - (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)section {
-    if (section == 0) return nil;
-    if (section == 1) return @"GENERAL";
+    if (section == 0) return @"GENERAL";
     return [NSString stringWithFormat:@"APPS (%lu locked)", (unsigned long)_lockedApps.count];
 }
 
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)section {
-    if (section == 1)
+    if (section == 0)
         return @"When enabled, selected apps will require Face ID or passcode to open.";
     return nil;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
-    if (ip.section == 1) {
+    if (ip.section == 0) {
         UITableViewCell *cell = [tv dequeueReusableCellWithIdentifier:@"toggle"];
         if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                                   reuseIdentifier:@"toggle"];
@@ -160,7 +142,7 @@
 
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip {
     [tv deselectRowAtIndexPath:ip animated:YES];
-    if (ip.section != 2) return;
+    if (ip.section != 1) return;
 
     LSApplicationProxy *app = _filteredApps[ip.row];
     NSString *bid = [app applicationIdentifier];
@@ -172,8 +154,7 @@
     }
 
     [tv reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationNone];
-    // update header to show new count
-    [tv reloadSections:[NSIndexSet indexSetWithIndex:2] withRowAnimation:UITableViewRowAnimationNone];
+    [tv reloadSections:[NSIndexSet indexSetWithIndex:1] withRowAnimation:UITableViewRowAnimationNone];
     [self _savePrefs];
 }
 
@@ -195,17 +176,7 @@
                        [[app applicationIdentifier] localizedCaseInsensitiveContainsString:q];
             }]];
     }
-    [self.table reloadData];
-}
-
-#pragma mark - PSListController (override to use custom table)
-
-- (id)specifiers {
-    return @[]; // we use raw table, not PSSpecifiers
-}
-
-- (UITableView *)table {
-    return [super table];
+    [_tableView reloadData];
 }
 
 @end

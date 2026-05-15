@@ -1,5 +1,5 @@
-#import <Preferences/PSListController.h>
-#import <Preferences/PSSpecifier.h>
+#import <Preferences/PSViewController.h>
 
-@interface BLRootListController : PSListController
+@interface BLRootListController : PSViewController <UITableViewDataSource, UITableViewDelegate, UISearchResultsUpdating>
+@property (nonatomic, strong) UITableView *tableView;
 @end
