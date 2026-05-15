@@ -1,13 +1,20 @@
 #import "BLRootListController.h"
 #import <objc/runtime.h>
 #import <sys/stat.h>
+#import <spawn.h>
 
 #define kBLPrefsPath @"/var/jb/Library/Application Support/BioLock/prefs.plist"
+#define kBLPrefsDir  @"/var/jb/Library/Application Support/BioLock"
 #define kBLNotification "com.biolock.prefs/changed"
 
 @interface LSApplicationProxy : NSObject
 - (NSString *)applicationIdentifier;
 - (NSString *)localizedName;
+- (NSString *)bundleURL;
+@end
+
+@interface UIImage (Private)
++ (UIImage *)_applicationIconImageForBundleIdentifier:(NSString *)bid format:(int)fmt scale:(CGFloat)scale;
 @end
 
 @implementation BLRootListController {
@@ -31,13 +38,39 @@
     _tableView.delegate = self;
     [self.view addSubview:_tableView];
 
+    // header
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 130)];
+    UILabel *title = [[UILabel alloc] init];
+    title.text = @"BioLock";
+    title.font = [UIFont systemFontOfSize:34 weight:UIFontWeightBold];
+    title.textAlignment = NSTextAlignmentCenter;
+    title.frame = CGRectMake(0, 20, header.bounds.size.width, 42);
+    [header addSubview:title];
+
+    UILabel *sub = [[UILabel alloc] init];
+    sub.text = @"Lock apps with Face ID";
+    sub.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
+    sub.textColor = [UIColor secondaryLabelColor];
+    sub.textAlignment = NSTextAlignmentCenter;
+    sub.frame = CGRectMake(0, 64, header.bounds.size.width, 20);
+    [header addSubview:sub];
+
+    UIView *line = [[UIView alloc] initWithFrame:CGRectMake(40, 96, header.bounds.size.width - 80, 1)];
+    line.backgroundColor = [UIColor separatorColor];
+    [header addSubview:line];
+
+    _tableView.tableHeaderView = header;
+
+    // search
     _searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
     _searchController.searchResultsUpdater = self;
     _searchController.obscuresBackgroundDuringPresentation = NO;
     _searchController.searchBar.placeholder = @"Search apps...";
     self.navigationItem.searchController = _searchController;
-    self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    self.navigationItem.hidesSearchBarWhenScrolling = YES;
 }
+
+#pragma mark - Prefs I/O
 
 - (void)_loadPrefs {
     NSDictionary *p = [NSDictionary dictionaryWithContentsOfFile:kBLPrefsPath];
@@ -49,18 +82,43 @@
 - (void)_savePrefs {
     _prefs[@"lockedApps"] = [_lockedApps allObjects];
 
-    NSString *dir = [kBLPrefsPath stringByDeletingLastPathComponent];
-    [[NSFileManager defaultManager] createDirectoryAtPath:dir
-        withIntermediateDirectories:YES attributes:nil error:nil];
-    [_prefs writeToFile:kBLPrefsPath atomically:YES];
+    // ensure directory exists with proper perms
+    NSFileManager *fm = [NSFileManager defaultManager];
+    BOOL isDir = NO;
+    if (![fm fileExistsAtPath:kBLPrefsDir isDirectory:&isDir] || !isDir) {
+        // use posix_spawn for reliable directory creation on rootless
+        const char *args[] = {"/bin/mkdir", "-p",
+            [kBLPrefsDir UTF8String], NULL};
+        pid_t pid;
+        extern char **environ;
+        posix_spawn(&pid, "/bin/mkdir", NULL, NULL, (char **)args, environ);
+        waitpid(pid, NULL, 0);
 
-    chmod([kBLPrefsPath UTF8String], 0666);
-    chmod([dir UTF8String], 0755);
+        const char *args2[] = {"/bin/chmod", "0777",
+            [kBLPrefsDir UTF8String], NULL};
+        posix_spawn(&pid, "/bin/chmod", NULL, NULL, (char **)args2, environ);
+        waitpid(pid, NULL, 0);
+    }
+
+    BOOL ok = [_prefs writeToFile:kBLPrefsPath atomically:YES];
+    if (ok) {
+        chmod([kBLPrefsPath UTF8String], 0666);
+    } else {
+        // fallback: try writing via posix_spawn
+        NSData *data = [NSPropertyListSerialization dataWithPropertyList:_prefs
+            format:NSPropertyListXMLFormat_v1_0 options:0 error:nil];
+        if (data) {
+            [data writeToFile:kBLPrefsPath atomically:YES];
+            chmod([kBLPrefsPath UTF8String], 0666);
+        }
+    }
 
     CFNotificationCenterPostNotification(
         CFNotificationCenterGetDarwinNotifyCenter(),
         CFSTR(kBLNotification), NULL, NULL, YES);
 }
+
+#pragma mark - App List
 
 - (void)_loadApps {
     Class LSW = NSClassFromString(@"LSApplicationWorkspace");
@@ -74,10 +132,9 @@
         if ([bid hasPrefix:@"com.apple.webapp"]) continue;
         if ([bid hasPrefix:@"com.apple.bridge"]) continue;
         if ([bid isEqualToString:@"com.apple.Preferences"]) continue;
-
+        if ([bid isEqualToString:@"com.apple.springboard"]) continue;
         NSString *name = [proxy localizedName];
         if (!name.length) continue;
-
         [userApps addObject:proxy];
     }
 
@@ -89,10 +146,16 @@
     _filteredApps = userApps;
 }
 
+- (UIImage *)_iconForBid:(NSString *)bid {
+    UIImage *icon = [UIImage _applicationIconImageForBundleIdentifier:bid format:1 scale:[UIScreen mainScreen].scale];
+    if (!icon) icon = [UIImage systemImageNamed:@"app.fill"];
+    return icon;
+}
+
 #pragma mark - UITableView
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tv {
-    return 2; // enable toggle, app list
+    return 2;
 }
 
 - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section {
@@ -101,14 +164,21 @@
 }
 
 - (NSString *)tableView:(UITableView *)tv titleForHeaderInSection:(NSInteger)section {
-    if (section == 0) return @"GENERAL";
-    return [NSString stringWithFormat:@"APPS (%lu locked)", (unsigned long)_lockedApps.count];
+    if (section == 0) return nil;
+    NSUInteger cnt = _lockedApps.count;
+    return cnt > 0 ? [NSString stringWithFormat:@"%lu APP%@ LOCKED", (unsigned long)cnt, cnt == 1 ? @"" : @"S"]
+                   : @"SELECT APPS TO LOCK";
 }
 
 - (NSString *)tableView:(UITableView *)tv titleForFooterInSection:(NSInteger)section {
     if (section == 0)
-        return @"When enabled, selected apps will require Face ID or passcode to open.";
+        return @"Selected apps will require Face ID or your device passcode before opening.";
     return nil;
+}
+
+- (CGFloat)tableView:(UITableView *)tv heightForRowAtIndexPath:(NSIndexPath *)ip {
+    if (ip.section == 0) return 50;
+    return 56;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)ip {
@@ -117,6 +187,9 @@
         if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                                   reuseIdentifier:@"toggle"];
         cell.textLabel.text = @"Enable BioLock";
+        cell.textLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightMedium];
+        cell.imageView.image = [UIImage systemImageNamed:@"faceid"];
+        cell.imageView.tintColor = [UIColor systemBlueColor];
         UISwitch *sw = [[UISwitch alloc] init];
         sw.on = [_prefs[@"enabled"] boolValue];
         [sw addTarget:self action:@selector(_enableToggled:) forControlEvents:UIControlEventValueChanged];
@@ -131,12 +204,36 @@
 
     LSApplicationProxy *app = _filteredApps[ip.row];
     NSString *bid = [app applicationIdentifier];
+    BOOL locked = [_lockedApps containsObject:bid];
+
     cell.textLabel.text = [app localizedName];
-    cell.detailTextLabel.text = bid;
-    cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
-    cell.accessoryType = [_lockedApps containsObject:bid]
-        ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
-    cell.tintColor = [UIColor systemBlueColor];
+    cell.textLabel.font = [UIFont systemFontOfSize:16 weight:locked ? UIFontWeightSemibold : UIFontWeightRegular];
+    cell.detailTextLabel.text = locked ? @"Protected" : nil;
+    cell.detailTextLabel.textColor = [UIColor systemGreenColor];
+    cell.detailTextLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+
+    // app icon (29x29)
+    UIImage *icon = [self _iconForBid:bid];
+    if (icon) {
+        UIGraphicsBeginImageContextWithOptions(CGSizeMake(32, 32), NO, 0);
+        [icon drawInRect:CGRectMake(0, 0, 32, 32)];
+        cell.imageView.image = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+        cell.imageView.layer.cornerRadius = 7;
+        cell.imageView.layer.masksToBounds = YES;
+    }
+
+    if (locked) {
+        UIImageView *lock = [[UIImageView alloc] initWithImage:
+            [UIImage systemImageNamed:@"lock.fill"]];
+        lock.tintColor = [UIColor systemGreenColor];
+        lock.frame = CGRectMake(0, 0, 18, 18);
+        cell.accessoryView = lock;
+    } else {
+        cell.accessoryView = nil;
+        cell.accessoryType = UITableViewCellAccessoryNone;
+    }
+
     return cell;
 }
 
@@ -153,8 +250,7 @@
         [_lockedApps addObject:bid];
     }
 
-    [tv reloadRowsAtIndexPaths:@[ip] withRowAnimation:UITableViewRowAnimationNone];
-    [tv reloadSections:[NSIndexSet indexSetWithIndex:1] withRowAnimation:UITableViewRowAnimationNone];
+    [tv reloadSections:[NSIndexSet indexSetWithIndex:1] withRowAnimation:UITableViewRowAnimationAutomatic];
     [self _savePrefs];
 }
 
