@@ -1,0 +1,9 @@
+Package: com.biolock.tweak
+Name: BioLock
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Lock apps with Face ID / passcode. Select which apps require authentication before opening.
+Maintainer: dev
+Author: dev
+Section: Tweaks
+Depends: mobilesubstrate, preferenceloader
