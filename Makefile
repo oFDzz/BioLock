@@ -21,7 +21,6 @@ BioLockPrefs_FRAMEWORKS = UIKit Foundation
 BioLockPrefs_PRIVATE_FRAMEWORKS = Preferences
 BioLockPrefs_INSTALL_PATH = /Library/PreferenceBundles
 BioLockPrefs_RESOURCE_DIRS = BioLockPrefs/Resources
-BioLockPrefs_CODESIGN_FLAGS = -SBioLockPrefs.entitlements
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 include $(THEOS_MAKE_PATH)/bundle.mk

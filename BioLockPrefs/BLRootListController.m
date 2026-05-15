@@ -100,17 +100,22 @@
         waitpid(pid, NULL, 0);
     }
 
-    BOOL ok = [_prefs writeToFile:kBLPrefsPath atomically:YES];
+    NSError *writeErr = nil;
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:_prefs
+        format:NSPropertyListXMLFormat_v1_0 options:0 error:&writeErr];
+
+    BOOL ok = NO;
+    if (data) {
+        ok = [data writeToFile:kBLPrefsPath options:NSDataWritingAtomic error:&writeErr];
+    }
+
     if (ok) {
         chmod([kBLPrefsPath UTF8String], 0666);
+        NSLog(@"[BioLock-Prefs] ✅ saved: enabled=%@ locked=%lu",
+              _prefs[@"enabled"], (unsigned long)_lockedApps.count);
     } else {
-        // fallback: try writing via posix_spawn
-        NSData *data = [NSPropertyListSerialization dataWithPropertyList:_prefs
-            format:NSPropertyListXMLFormat_v1_0 options:0 error:nil];
-        if (data) {
-            [data writeToFile:kBLPrefsPath atomically:YES];
-            chmod([kBLPrefsPath UTF8String], 0666);
-        }
+        NSLog(@"[BioLock-Prefs] ❌ save failed: %@ path=%@", writeErr, kBLPrefsPath);
+        NSLog(@"[BioLock-Prefs] dir exists: %d", [fm fileExistsAtPath:kBLPrefsDir]);
     }
 
     CFNotificationCenterPostNotification(
