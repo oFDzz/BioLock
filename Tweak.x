@@ -1,6 +1,5 @@
 // BioLock — Lock apps with Face ID / passcode
-// Runs only in SpringBoard. Hooks app icon taps and app switcher.
-// Uses LAContext for biometric auth with passcode fallback.
+// Runs only in SpringBoard.
 
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
@@ -19,11 +18,6 @@
 - (NSString *)displayName;
 @end
 
-@interface SBApplicationController : NSObject
-+ (instancetype)sharedInstance;
-- (SBApplication *)applicationWithBundleIdentifier:(NSString *)bid;
-@end
-
 @interface SBIcon : NSObject
 - (NSString *)applicationBundleID;
 - (NSString *)displayName;
@@ -33,9 +27,13 @@
 - (SBIcon *)icon;
 @end
 
+@interface SBApplicationController : NSObject
++ (instancetype)sharedInstance;
+- (SBApplication *)applicationWithBundleIdentifier:(NSString *)bid;
+@end
+
 @interface SBLockScreenManager : NSObject
 + (instancetype)sharedInstance;
-- (BOOL)isUILocked;
 @end
 
 // ═════════════════════════════════════════════════════════════════
@@ -68,6 +66,32 @@ static BOOL isAppLocked(NSString *bid) {
     return YES;
 }
 
+// get bundle ID from SBIconView safely
+static NSString *bundleIDFromIconView(id iconView) {
+    @try {
+        if ([iconView respondsToSelector:@selector(icon)]) {
+            id icon = [iconView performSelector:@selector(icon)];
+            if ([icon respondsToSelector:@selector(applicationBundleID)])
+                return [icon performSelector:@selector(applicationBundleID)];
+        }
+        // fallback: try applicationBundleID directly on the view
+        if ([iconView respondsToSelector:@selector(applicationBundleID)])
+            return [iconView performSelector:@selector(applicationBundleID)];
+    } @catch (NSException *e) {}
+    return nil;
+}
+
+static NSString *displayNameFromIconView(id iconView) {
+    @try {
+        if ([iconView respondsToSelector:@selector(icon)]) {
+            id icon = [iconView performSelector:@selector(icon)];
+            if ([icon respondsToSelector:@selector(displayName)])
+                return [icon performSelector:@selector(displayName)];
+        }
+    } @catch (NSException *e) {}
+    return nil;
+}
+
 // ═════════════════════════════════════════════════════════════════
 // Face ID / Passcode authentication
 // ═════════════════════════════════════════════════════════════════
@@ -87,7 +111,6 @@ static void authenticateForApp(NSString *bid, NSString *appName,
     BOOL canBio = [ctx canEvaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics
                                    error:&canEvalErr];
 
-    // pick policy: biometrics if available, otherwise device passcode
     LAPolicy policy = canBio
         ? LAPolicyDeviceOwnerAuthenticationWithBiometrics
         : LAPolicyDeviceOwnerAuthentication;
@@ -106,7 +129,6 @@ static void authenticateForApp(NSString *bid, NSString *appName,
             return;
         }
 
-        // user tapped "Enter Passcode" fallback
         if (error.code == LAErrorUserFallback) {
             LAContext *ctx2 = [[LAContext alloc] init];
             [ctx2 evaluatePolicy:LAPolicyDeviceOwnerAuthentication
@@ -119,7 +141,6 @@ static void authenticateForApp(NSString *bid, NSString *appName,
                         NSLog(@"[BioLock] ✅ passcode auth for %@", bid);
                         if (onSuccess) onSuccess();
                     } else {
-                        NSLog(@"[BioLock] ❌ passcode failed for %@", bid);
                         if (onFail) onFail();
                     }
                 });
@@ -127,7 +148,7 @@ static void authenticateForApp(NSString *bid, NSString *appName,
         } else {
             dispatch_async(dispatch_get_main_queue(), ^{
                 sAuthInProgress = NO;
-                NSLog(@"[BioLock] ❌ auth failed/cancelled for %@ (code=%ld)", bid, (long)error.code);
+                NSLog(@"[BioLock] ❌ auth cancelled for %@ (code=%ld)", bid, (long)error.code);
                 if (onFail) onFail();
             });
         }
@@ -135,43 +156,88 @@ static void authenticateForApp(NSString *bid, NSString *appName,
 }
 
 // ═════════════════════════════════════════════════════════════════
-// Hook 1: Home screen icon tap
-// SBIconView handles icon taps. On iOS 15 the method chain is:
-// tap gesture → _handleTap → _launchApp / _activateApp etc.
-// We hook multiple potential entry points.
+// Runtime hook installer — finds and hooks the correct method
 // ═════════════════════════════════════════════════════════════════
 
-%hook SBIconView
+static IMP orig_iconViewLaunch = NULL;
+static SEL hooked_launch_sel = NULL;
 
-- (void)_launchApp {
-    NSString *bid = nil;
-    @try {
-        SBIcon *icon = [self icon];
-        if ([icon respondsToSelector:@selector(applicationBundleID)])
-            bid = [icon applicationBundleID];
-    } @catch (NSException *e) {}
-    NSLog(@"[BioLock] 📱 _launchApp: %@", bid);
-    if (!bid || !isAppLocked(bid)) { %orig; return; }
+static void hooked_iconViewLaunch(id self, SEL _cmd) {
+    NSString *bid = bundleIDFromIconView(self);
+    NSLog(@"[BioLock] 📱 icon tap: %@ (sel=%s)", bid, sel_getName(_cmd));
 
-    NSString *name = nil;
-    @try { name = [[self icon] displayName]; } @catch (NSException *e) {}
-    authenticateForApp(bid, name, ^{ %orig; }, nil);
+    if (!bid || !isAppLocked(bid)) {
+        ((void(*)(id, SEL))orig_iconViewLaunch)(self, _cmd);
+        return;
+    }
+
+    NSString *name = displayNameFromIconView(self);
+    authenticateForApp(bid, name, ^{
+        ((void(*)(id, SEL))orig_iconViewLaunch)(self, hooked_launch_sel);
+    }, nil);
 }
 
-%end
+static void installIconViewHook(void) {
+    Class cls = objc_getClass("SBIconView");
+    if (!cls) {
+        NSLog(@"[BioLock] ⚠️ SBIconView class not found!");
+        return;
+    }
+
+    // try these selectors in order — first one that exists wins
+    const char *candidates[] = {
+        "_launchApp",
+        "launchApp",
+        "_handleSecondHalfTap",
+        "_didTap",
+        "_handleTap",
+        "activateShortcut:withBundleIdentifier:forIconView:",
+        NULL
+    };
+
+    // first dump ALL methods with launch/tap/activate for diagnostics
+    unsigned int mc = 0;
+    Method *methods = class_copyMethodList(cls, &mc);
+    NSLog(@"[BioLock] SBIconView: %u methods total. Candidates:", mc);
+    for (unsigned int i = 0; i < mc; i++) {
+        const char *sel = sel_getName(method_getName(methods[i]));
+        if (strstr(sel, "launch") || strstr(sel, "Launch") ||
+            strstr(sel, "activate") || strstr(sel, "Activate") ||
+            strstr(sel, "tap") || strstr(sel, "Tap") ||
+            strstr(sel, "open") || strstr(sel, "Open") ||
+            strstr(sel, "action") || strstr(sel, "Action") ||
+            strstr(sel, "touch") || strstr(sel, "Touch")) {
+            NSLog(@"[BioLock] 📋 -> %s", sel);
+        }
+    }
+    if (methods) free(methods);
+
+    // try hooking each candidate
+    for (int i = 0; candidates[i]; i++) {
+        SEL sel = sel_registerName(candidates[i]);
+        Method m = class_getInstanceMethod(cls, sel);
+        if (m) {
+            orig_iconViewLaunch = method_getImplementation(m);
+            hooked_launch_sel = sel;
+            method_setImplementation(m, (IMP)hooked_iconViewLaunch);
+            NSLog(@"[BioLock] ✅ hooked SBIconView -> %s", candidates[i]);
+            return;
+        }
+    }
+
+    NSLog(@"[BioLock] ⚠️ no known launch method found on SBIconView!");
+}
 
 // ═════════════════════════════════════════════════════════════════
-// Hook 2: Reset unlocked apps when device locks
+// Reset unlocked apps when device locks
 // ═════════════════════════════════════════════════════════════════
 
 %hook SBLockScreenManager
-
 - (void)lockUIFromSource:(int)source withOptions:(id)options {
     %orig;
     NSLog(@"[BioLock] 🔒 device locked — clearing session");
     [sUnlockedThisSession removeAllObjects];
 }
-
 %end
 
 // ═════════════════════════════════════════════════════════════════
@@ -192,28 +258,10 @@ static void authenticateForApp(NSString *bid, NSString *appName,
             CFSTR(kBLNotification), NULL,
             CFNotificationSuspensionBehaviorDeliverImmediately);
 
+        // install hooks via runtime (finds correct method for this iOS version)
+        installIconViewHook();
+
         NSLog(@"[BioLock] ✅ loaded in SpringBoard — %lu apps locked",
               (unsigned long)sLockedApps.count);
-
-        // dump SBIconView methods to find the right launch hook
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            Class cls = objc_getClass("SBIconView");
-            if (!cls) { NSLog(@"[BioLock] SBIconView not found!"); return; }
-            unsigned int mc = 0;
-            Method *methods = class_copyMethodList(cls, &mc);
-            NSLog(@"[BioLock] SBIconView has %u methods, filtering for launch/tap/activate:", mc);
-            for (unsigned int i = 0; i < mc; i++) {
-                const char *sel = sel_getName(method_getName(methods[i]));
-                if (strstr(sel, "launch") || strstr(sel, "Launch") ||
-                    strstr(sel, "activate") || strstr(sel, "Activate") ||
-                    strstr(sel, "tap") || strstr(sel, "Tap") ||
-                    strstr(sel, "open") || strstr(sel, "Open") ||
-                    strstr(sel, "action") || strstr(sel, "Action")) {
-                    NSLog(@"[BioLock] 📋 SBIconView -> %s", sel);
-                }
-            }
-            if (methods) free(methods);
-        });
     }
 }
