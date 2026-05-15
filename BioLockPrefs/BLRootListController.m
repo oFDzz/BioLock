@@ -62,8 +62,10 @@
 }
 
 - (void)_loadApps {
+    Class LSW = NSClassFromString(@"LSApplicationWorkspace");
     NSArray<LSApplicationProxy *> *all =
-        [[LSApplicationWorkspace defaultWorkspace] allInstalledApplications];
+        [[LSW performSelector:@selector(defaultWorkspace)]
+              performSelector:@selector(allInstalledApplications)];
 
     NSMutableArray *userApps = [NSMutableArray new];
     for (LSApplicationProxy *proxy in all) {
