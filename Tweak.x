@@ -143,20 +143,13 @@ static void authenticateForApp(NSString *bid, NSString *appName,
 
 %hook SBIconView
 
-// iOS 14-15: primary launch method
-%new
-- (NSString *)_bl_bundleID {
+- (void)_launchApp {
     NSString *bid = nil;
     @try {
         SBIcon *icon = [self icon];
         if ([icon respondsToSelector:@selector(applicationBundleID)])
             bid = [icon applicationBundleID];
     } @catch (NSException *e) {}
-    return bid;
-}
-
-- (void)_launchApp {
-    NSString *bid = [self _bl_bundleID];
     NSLog(@"[BioLock] 📱 _launchApp: %@", bid);
     if (!bid || !isAppLocked(bid)) { %orig; return; }
 
