@@ -1,4 +1,4 @@
 #!/bin/sh
 mkdir -p "/var/jb/Library/Application Support/BioLock"
-chmod 0755 "/var/jb/Library/Application Support/BioLock"
+chmod 0777 "/var/jb/Library/Application Support/BioLock"
 exit 0

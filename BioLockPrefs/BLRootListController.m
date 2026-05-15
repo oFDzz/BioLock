@@ -82,23 +82,18 @@
 - (void)_savePrefs {
     _prefs[@"lockedApps"] = [_lockedApps allObjects];
 
-    // ensure directory exists with proper perms
+    // ensure directory exists with proper perms (always chmod — postinst creates as root)
     NSFileManager *fm = [NSFileManager defaultManager];
-    BOOL isDir = NO;
-    if (![fm fileExistsAtPath:kBLPrefsDir isDirectory:&isDir] || !isDir) {
-        // use posix_spawn for reliable directory creation on rootless
-        const char *args[] = {"/bin/mkdir", "-p",
-            [kBLPrefsDir UTF8String], NULL};
-        pid_t pid;
-        extern char **environ;
-        posix_spawn(&pid, "/bin/mkdir", NULL, NULL, (char **)args, environ);
-        waitpid(pid, NULL, 0);
+    pid_t pid;
+    extern char **environ;
 
-        const char *args2[] = {"/bin/chmod", "0777",
-            [kBLPrefsDir UTF8String], NULL};
-        posix_spawn(&pid, "/bin/chmod", NULL, NULL, (char **)args2, environ);
-        waitpid(pid, NULL, 0);
-    }
+    const char *args[] = {"/bin/mkdir", "-p", [kBLPrefsDir UTF8String], NULL};
+    posix_spawn(&pid, "/bin/mkdir", NULL, NULL, (char **)args, environ);
+    waitpid(pid, NULL, 0);
+
+    const char *args2[] = {"/bin/chmod", "0777", [kBLPrefsDir UTF8String], NULL};
+    posix_spawn(&pid, "/bin/chmod", NULL, NULL, (char **)args2, environ);
+    waitpid(pid, NULL, 0);
 
     NSError *writeErr = nil;
     NSData *data = [NSPropertyListSerialization dataWithPropertyList:_prefs
