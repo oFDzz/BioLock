@@ -194,5 +194,26 @@ static void authenticateForApp(NSString *bid, NSString *appName,
 
         NSLog(@"[BioLock] ✅ loaded in SpringBoard — %lu apps locked",
               (unsigned long)sLockedApps.count);
+
+        // dump SBIconView methods to find the right launch hook
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            Class cls = objc_getClass("SBIconView");
+            if (!cls) { NSLog(@"[BioLock] SBIconView not found!"); return; }
+            unsigned int mc = 0;
+            Method *methods = class_copyMethodList(cls, &mc);
+            NSLog(@"[BioLock] SBIconView has %u methods, filtering for launch/tap/activate:", mc);
+            for (unsigned int i = 0; i < mc; i++) {
+                const char *sel = sel_getName(method_getName(methods[i]));
+                if (strstr(sel, "launch") || strstr(sel, "Launch") ||
+                    strstr(sel, "activate") || strstr(sel, "Activate") ||
+                    strstr(sel, "tap") || strstr(sel, "Tap") ||
+                    strstr(sel, "open") || strstr(sel, "Open") ||
+                    strstr(sel, "action") || strstr(sel, "Action")) {
+                    NSLog(@"[BioLock] 📋 SBIconView -> %s", sel);
+                }
+            }
+            if (methods) free(methods);
+        });
     }
 }
