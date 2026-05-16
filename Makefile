@@ -17,7 +17,7 @@ BUNDLE_NAME = BioLockPrefs
 
 BioLockPrefs_FILES = BioLockPrefs/BLRootListController.m
 BioLockPrefs_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
-BioLockPrefs_FRAMEWORKS = UIKit Foundation
+BioLockPrefs_FRAMEWORKS = UIKit Foundation LocalAuthentication
 BioLockPrefs_PRIVATE_FRAMEWORKS = Preferences
 BioLockPrefs_INSTALL_PATH = /Library/PreferenceBundles
 BioLockPrefs_RESOURCE_DIRS = BioLockPrefs/Resources

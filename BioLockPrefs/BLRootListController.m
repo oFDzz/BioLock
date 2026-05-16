@@ -23,6 +23,9 @@
     NSArray<LSApplicationProxy *> *_apps;
     NSArray<LSApplicationProxy *> *_filteredApps;
     UISearchController *_searchController;
+    UIVisualEffectView *_authBlur;
+    BOOL _authenticated;
+    BOOL _authInProgress;
 }
 
 - (void)viewDidLoad {
@@ -68,6 +71,112 @@
     _searchController.searchBar.placeholder = @"Search apps...";
     self.navigationItem.searchController = _searchController;
     self.navigationItem.hidesSearchBarWhenScrolling = YES;
+
+    // auth gate — blur covers everything until Face ID passes
+    _authenticated = NO;
+    _authInProgress = NO;
+    UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThickMaterial];
+    _authBlur = [[UIVisualEffectView alloc] initWithEffect:blur];
+    _authBlur.frame = self.view.bounds;
+    _authBlur.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+
+    // lock icon + label on the blur
+    UIImageView *lockIcon = [[UIImageView alloc] initWithImage:
+        [UIImage systemImageNamed:@"lock.fill" withConfiguration:
+            [UIImageSymbolConfiguration configurationWithPointSize:48 weight:UIImageSymbolWeightMedium]]];
+    lockIcon.tintColor = [UIColor labelColor];
+    lockIcon.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UILabel *lockLabel = [[UILabel alloc] init];
+    lockLabel.text = @"Authenticate to access BioLock";
+    lockLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
+    lockLabel.textColor = [UIColor secondaryLabelColor];
+    lockLabel.textAlignment = NSTextAlignmentCenter;
+    lockLabel.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[lockIcon, lockLabel]];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.alignment = UIStackViewAlignmentCenter;
+    stack.spacing = 12;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+
+    [_authBlur.contentView addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.centerXAnchor constraintEqualToAnchor:_authBlur.contentView.centerXAnchor],
+        [stack.centerYAnchor constraintEqualToAnchor:_authBlur.contentView.centerYAnchor constant:-40]
+    ]];
+
+    [self.view addSubview:_authBlur];
+    _tableView.userInteractionEnabled = NO;
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    if (!_authenticated) {
+        [self _triggerAuth];
+    }
+}
+
+- (void)_triggerAuth {
+    if (_authInProgress) return;
+    _authInProgress = YES;
+
+    LAContext *ctx = [[LAContext alloc] init];
+    ctx.localizedFallbackTitle = @"Enter Passcode";
+
+    [ctx evaluatePolicy:LAPolicyDeviceOwnerAuthenticationWithBiometrics
+         localizedReason:@"Authenticate to access BioLock settings"
+                   reply:^(BOOL success, NSError *error) {
+        if (success) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self->_authInProgress = NO;
+                [self _authSucceeded];
+            });
+            return;
+        }
+
+        // fallback to device passcode on tap or biometry failure
+        if (error.code == LAErrorUserFallback ||
+            error.code == LAErrorBiometryLockout ||
+            error.code == LAErrorAuthenticationFailed) {
+            LAContext *ctx2 = [[LAContext alloc] init];
+            [ctx2 evaluatePolicy:LAPolicyDeviceOwnerAuthentication
+                  localizedReason:@"Authenticate to access BioLock settings"
+                            reply:^(BOOL ok, NSError *err2) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    self->_authInProgress = NO;
+                    if (ok) {
+                        [self _authSucceeded];
+                    } else {
+                        [self _authFailed];
+                    }
+                });
+            }];
+        } else {
+            // user cancelled
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self->_authInProgress = NO;
+                [self _authFailed];
+            });
+        }
+    }];
+}
+
+- (void)_authSucceeded {
+    _authenticated = YES;
+    [UIView animateWithDuration:0.3 animations:^{
+        self->_authBlur.alpha = 0;
+    } completion:^(BOOL finished) {
+        [self->_authBlur removeFromSuperview];
+        self->_tableView.userInteractionEnabled = YES;
+    }];
+}
+
+- (void)_authFailed {
+    // pop back to Settings — they don't get in
+    if (self.navigationController) {
+        [self.navigationController popViewControllerAnimated:YES];
+    }
 }
 
 #pragma mark - Prefs I/O
