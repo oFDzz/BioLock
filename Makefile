@@ -10,7 +10,7 @@ TWEAK_NAME = BioLock
 
 BioLock_FILES = Tweak.x
 BioLock_CFLAGS = -fobjc-arc -Wno-deprecated-declarations
-BioLock_FRAMEWORKS = UIKit LocalAuthentication
+BioLock_FRAMEWORKS = UIKit LocalAuthentication QuartzCore
 BioLock_PRIVATE_FRAMEWORKS = SpringBoardServices FrontBoardServices
 
 BUNDLE_NAME = BioLockPrefs
