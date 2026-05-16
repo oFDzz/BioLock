@@ -56,6 +56,10 @@
 @interface SBNCScreenController : NSObject
 @end
 
+@interface UIImage (Private)
++ (UIImage *)_applicationIconImageForBundleIdentifier:(NSString *)bid format:(int)fmt scale:(CGFloat)scale;
+@end
+
 @interface SBIconController : NSObject
 + (instancetype)sharedInstance;
 - (void)_reloadIconModel;
